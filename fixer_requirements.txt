@@ -105,6 +105,5 @@ urllib3==2.7.0
 vision-aided-loss==0.1.0
 wcwidth==0.8.0
 wheel==0.47.0
-xdata==0.0.1
 yacs==0.1.8
 zipp==4.1.0
