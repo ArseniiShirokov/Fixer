@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fixer"
+version = "0.1.0"
+description = "Fixer: improving 3D reconstructions with single-step diffusion models"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "NVIDIA Source Code License" }
+authors = [{ name = "Fixer Authors" }]
+dynamic = ["dependencies"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = [
+    "inference_pretrained_model",
+    "model",
+    "pix2pix_turbo_nocond_cosmos_base_faster_tokenizer",
+    "train_pix2pix_turbo_nocond_cosmos_base_faster_tokenizer",
+    "evaluate_test_dataset",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["utils*", "fixer*"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["fixer_requirements.txt"] }

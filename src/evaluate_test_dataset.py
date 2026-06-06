@@ -29,8 +29,8 @@ from torchmetrics.image import LearnedPerceptualImagePatchSimilarity, PeakSignal
 from torchmetrics.image.fid import FrechetInceptionDistance
 import pynvml
 
-# Import modular functions from inference_pretrained_model
-from inference_pretrained_model import (
+# Import modular functions from fixer package
+from fixer.inference_pretrained_model import (
     load_and_compile_model,
     warmup_model,
     speed_measure,

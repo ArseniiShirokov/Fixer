@@ -17,6 +17,7 @@ import os
 import requests
 import sys
 import copy
+from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 import torch
@@ -42,8 +43,10 @@ from imaginaire.lazy_config import LazyDict, instantiate
 config = get_cosmos_predict2_text2image_pipeline(model_size="0.6B", fast_tokenizer=True)
 
 ### MiniTrainDIT
-config.dit_path = '/work/models/base/model_fast_tokenizer.pt'
-config.tokenizer["vae_pth"] = '/work/models/base/tokenizer_fast.pth'
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_BASE_MODELS_DIR = _PROJECT_ROOT / "models" / "base"
+config.dit_path = str(_BASE_MODELS_DIR / "model_fast_tokenizer.pt")
+config.tokenizer["vae_pth"] = str(_BASE_MODELS_DIR / "tokenizer_fast.pth")
 config.guardrail_config.enabled=False
 
 from model import make_1step_sched_base as make_1step_sched  # , my_vae_encoder_fwd, my_vae_decoder_fwd
