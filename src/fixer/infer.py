@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import dataclasses
 from pathlib import Path
 
 import torch
@@ -12,7 +14,6 @@ from .inference_pretrained_model import (
     get_image_paths,
     get_resolution_size,
     load_and_compile_model,
-    model_inference,
     postprocess_output,
     preprocess_image,
 )
@@ -38,6 +39,7 @@ class FixerInferencer:
         batch_size: int = 1,
         warmup_iters: int = 10,
         use_cuda_graph: bool = True,
+        native_bf16: bool = False,
     ) -> None:
         self.model_path = model_path
         self.timestep = timestep
@@ -48,6 +50,11 @@ class FixerInferencer:
         self.batch_size = batch_size
         self.warmup_iters = warmup_iters
         self.use_cuda_graph = use_cuda_graph
+        # Run the forward without autocast (weights already in self.dtype). The
+        # cached fp32 `condition` is cast to dtype so the DiT matmuls line up.
+        # Removes the autocast fp32<->bf16 cast churn; output matches autocast
+        # on real images (~0.1% mean diff).
+        self.native_bf16 = native_bf16
 
         self.h, self.w = 1024, 576
         self.input_size = get_resolution_size(resolution)
@@ -72,6 +79,9 @@ class FixerInferencer:
             compile=self.compile_model,
         )
 
+        if self.native_bf16:
+            self._cast_condition_to_dtype()
+
         # Match the real preprocessed input shape: an image resized to
         # input_size=(W, H) becomes a tensor [B, 3, H, W]. (h/w are vestigial
         # and were transposed relative to the actual input.)
@@ -87,15 +97,7 @@ class FixerInferencer:
 
         with torch.no_grad():
             for _ in tqdm(range(self.warmup_iters), desc="Warmup", leave=False):
-                model_inference(
-                    self.model,
-                    self.batch_size,
-                    self.h,
-                    self.w,
-                    self.dtype,
-                    self.device,
-                    x=self._warmup_tensor,
-                )
+                self._fwd(self._warmup_tensor)
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
 
@@ -107,10 +109,33 @@ class FixerInferencer:
                       f"falling back to non-graph path")
                 self._graph = None
 
+    def _cast_condition_to_dtype(self) -> None:
+        """Cast the cached (frozen) DiT condition tensors to self.dtype so the
+        forward can run without autocast. Done before warmup so torch.compile
+        traces the bf16 condition."""
+        raw = getattr(self.model, "_orig_mod", self.model)
+        cond = getattr(raw, "condition", None)
+        if cond is None or not dataclasses.is_dataclass(cond):
+            return
+        repl = {
+            f.name: getattr(cond, f.name).to(self.dtype)
+            for f in dataclasses.fields(cond)
+            if isinstance(getattr(cond, f.name), torch.Tensor)
+            and getattr(cond, f.name).is_floating_point()
+        }
+        raw.condition = dataclasses.replace(cond, **repl)
+
     def _autocast(self):
-        # cache_enabled=False: autocast's cast-weight cache is unsafe across
-        # CUDA-graph capture/replay; weights are already in self.dtype anyway.
+        # native_bf16: no autocast (weights+condition already in self.dtype).
+        # Otherwise cache_enabled=False because autocast's cast-weight cache is
+        # unsafe across CUDA-graph capture/replay.
+        if self.native_bf16:
+            return contextlib.nullcontext()
         return torch.autocast(device_type="cuda", dtype=self.dtype, cache_enabled=False)
+
+    def _fwd(self, x: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad(), self._autocast():
+            return self.model(x)
 
     def _capture_cuda_graph(self) -> None:
         """Capture the full forward (vae enc -> DiT denoise -> vae dec) into one graph."""
@@ -152,16 +177,7 @@ class FixerInferencer:
             self._static_in.copy_(x)
             self._graph.replay()
             return self._static_out
-        with torch.no_grad():
-            return model_inference(
-                self.model,
-                self.batch_size,
-                self.h,
-                self.w,
-                self.dtype,
-                self.device,
-                x=x,
-            )
+        return self._fwd(x)
 
     def infer(self, image: Image.Image) -> Image.Image:
         x, original_size = self._preprocess(image)
@@ -180,6 +196,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--no-compile", action="store_true")
     parser.add_argument("--no-cuda-graph", action="store_true")
+    parser.add_argument("--native-bf16", action="store_true",
+                        help="run forward without autocast (weights already bf16)")
     parser.add_argument("--warmup-iters", type=int, default=10)
     return parser.parse_args()
 
@@ -199,6 +217,7 @@ def main() -> None:
         batch_size=1,
         warmup_iters=args.warmup_iters,
         use_cuda_graph=not args.no_cuda_graph,
+        native_bf16=args.native_bf16,
     )
     inferencer.prepare_model()
 
